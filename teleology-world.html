@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Teleology World — Agent Simulation</title>
+  <style>
+    :root { --bg:#0c0c0f; --fg:#e8e8ef; --muted:#a6a6b3; --card:#16161d; --good:#2ecc71; --bad:#e74c3c; }
+    html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 1rem 1.5rem 2rem; }
+    h1,h2 { line-height:1.2; }
+    a { color:#82c7ff; }
+    .grid { display:grid; grid-template-columns: 1fr 340px; gap: 1rem; }
+    .card { background: var(--card); border:1px solid #22232b; border-radius:12px; padding:1rem; }
+    .row { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; }
+    .slider { width:220px; }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#1e1f27; padding:2px 6px; border-radius:6px; border:1px solid #2a2b36; }
+    canvas { background:#0b0b0e; border:1px solid #22232b; border-radius:12px; display:block; width:100%; height:auto; image-rendering: crisp-edges; }
+    .legend span { display:inline-block; width:12px; height:12px; border-radius:50%; margin-right:6px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Teleology World</h1>
+    <p class="muted">A simple agent-based simulation where an ethical field E biases interactions toward cooperation and coherence.</p>
+
+    <div class="grid">
+      <div class="card">
+        <canvas id="world" width="900" height="600"></canvas>
+      </div>
+      <div class="card">
+        <h2>Controls</h2>
+        <div class="row"><label>Agents: <span id="nVal" class="kbd">120</span></label><input id="nSlider" class="slider" type="range" min="20" max="300" step="10" value="120" /></div>
+        <div class="row"><label>Ethical bias E: <span id="EVal" class="kbd">1.0</span></label><input id="ESlider" class="slider" type="range" min="-5" max="5" step="0.1" value="1" /></div>
+        <div class="row"><label>Coupling C: <span id="CVal" class="kbd">1.0</span></label><input id="CSlider" class="slider" type="range" min="0.3" max="5" step="0.1" value="1" /></div>
+        <div class="row"><label>Interaction radius r: <span id="rVal" class="kbd">30</span></label><input id="rSlider" class="slider" type="range" min="10" max="80" step="2" value="30" /></div>
+        <div class="row"><label>Noise (explore): <span id="noiseVal" class="kbd">0.20</span></label><input id="noiseSlider" class="slider" type="range" min="0" max="1" step="0.01" value="0.2" /></div>
+        <div class="row"><button id="resetBtn">Reset</button><button id="pauseBtn">Pause</button><a href="./index.html" style="margin-left:auto">← Back</a></div>
+        <div class="legend" style="margin-top:0.5rem">
+          <p><span style="background:var(--good)"></span>Cooperator • <span style="background:var(--bad)"></span>Defector</p>
+        </div>
+        <div class="card" style="margin-top:0.5rem">
+          <h3>Metrics</h3>
+          <p>Cooperation ratio: <span id="coopVal" class="kbd">0.00</span></p>
+          <p>Average cluster size: <span id="clusterVal" class="kbd">0.00</span></p>
+        </div>
+        <p class="muted">Interaction payoff (Prisoner's Dilemma-like). Ethical field E biases the choice toward cooperation with weight exp(+E/C) and toward defection with exp(−E/C).</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  const canvas = document.getElementById('world');
+  const ctx = canvas.getContext('2d');
+  const nSlider = document.getElementById('nSlider');
+  const ESlider = document.getElementById('ESlider');
+  const CSlider = document.getElementById('CSlider');
+  const rSlider = document.getElementById('rSlider');
+  const noiseSlider = document.getElementById('noiseSlider');
+  const nVal = document.getElementById('nVal');
+  const EVal = document.getElementById('EVal');
+  const CVal = document.getElementById('CVal');
+  const rVal = document.getElementById('rVal');
+  const noiseVal = document.getElementById('noiseVal');
+  const coopVal = document.getElementById('coopVal');
+  const clusterVal = document.getElementById('clusterVal');
+  const resetBtn = document.getElementById('resetBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+
+  let agents = [];
+  let running = true;
+
+  function rand(a,b){ return a + Math.random()*(b-a); }
+
+  function initAgents(n){
+    agents = Array.from({length:n}, () => ({
+      x: rand(20, canvas.width-20),
+      y: rand(20, canvas.height-20),
+      vx: rand(-1,1),
+      vy: rand(-1,1),
+      state: Math.random() < 0.5 ? 'C' : 'D', // C: cooperate, D: defect
+    }));
+  }
+
+  function step(){
+    const N = agents.length;
+    const r = parseFloat(rSlider.value);
+    const E = parseFloat(ESlider.value);
+    const C = parseFloat(CSlider.value);
+    const noise = parseFloat(noiseSlider.value);
+
+    // Move
+    for(const a of agents){
+      a.x += a.vx + rand(-noise, noise);
+      a.y += a.vy + rand(-noise, noise);
+      if(a.x<5||a.x>canvas.width-5) a.vx*=-1;
+      if(a.y<5||a.y>canvas.height-5) a.vy*=-1;
+      a.x = Math.max(5, Math.min(canvas.width-5, a.x));
+      a.y = Math.max(5, Math.min(canvas.height-5, a.y));
+    }
+
+    // Interactions: choose action with ethical bias
+    for(let i=0;i<N;i++){
+      let neighbors=0, coopNeighbors=0;
+      for(let j=0;j<N;j++) if(i!==j){
+        const dx = agents[j].x - agents[i].x;
+        const dy = agents[j].y - agents[i].y;
+        if(dx*dx+dy*dy <= r*r){
+          neighbors++;
+          if(agents[j].state==='C') coopNeighbors++;
+        }
+      }
+      const localCoop = neighbors? coopNeighbors/neighbors : 0;
+      // Logistic blend of rational payoff + ethical bias
+      // Ethical weight: wC = exp(+E/C), wD = exp(-E/C)
+      const wC = Math.exp(+E/Math.max(1e-6,C));
+      const wD = Math.exp(-E/Math.max(1e-6,C));
+
+      // Simple payoff heuristic: if neighbors cooperate, cooperation is attractive
+      const payoffC = 1.0*localCoop; // normalized
+      const payoffD = 0.6*(1-localCoop) + 0.2; // temptation to defect
+
+      const uC = wC * payoffC;
+      const uD = wD * payoffD;
+      const Pcooperate = uC / (uC + uD + 1e-9);
+      agents[i].state = Math.random() < Pcooperate ? 'C' : 'D';
+    }
+  }
+
+  function render(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    let coop=0;
+    for(const a of agents){
+      if(a.state==='C') coop++;
+      ctx.fillStyle = a.state==='C' ? '#2ecc71' : '#e74c3c';
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, 3.5, 0, Math.PI*2);
+      ctx.fill();
+    }
+    coopVal.textContent = (coop/agents.length).toFixed(2);
+
+    // cluster size estimate via grid binning
+    const cell=30; const cols=Math.ceil(canvas.width/cell); const rows=Math.ceil(canvas.height/cell);
+    const grid = Array.from({length:rows},()=>Array(cols).fill(0));
+    for(const a of agents){
+      const cx=Math.min(cols-1,Math.max(0,Math.floor(a.x/cell)));
+      const cy=Math.min(rows-1,Math.max(0,Math.floor(a.y/cell)));
+      grid[cy][cx] += 1;
+    }
+    let totalCells=0, sumSizes=0;
+    for(let y=0;y<rows;y++){
+      for(let x=0;x<cols;x++){
+        if(grid[y][x]>0){ totalCells++; sumSizes += grid[y][x]; }
+      }
+    }
+    const avgCluster = totalCells? (sumSizes/totalCells) : 0;
+    clusterVal.textContent = avgCluster.toFixed(2);
+  }
+
+  function loop(){
+    if(running){ step(); render(); }
+    requestAnimationFrame(loop);
+  }
+
+  function syncUI(){
+    nVal.textContent = nSlider.value;
+    EVal.textContent = (+ESlider.value).toFixed(1);
+    CVal.textContent = (+CSlider.value).toFixed(1);
+    rVal.textContent = rSlider.value;
+    noiseVal.textContent = (+noiseSlider.value).toFixed(2);
+  }
+
+  function rebuild(){
+    initAgents(+nSlider.value);
+  }
+
+  nSlider.addEventListener('input', ()=>{ syncUI(); rebuild(); });
+  [ESlider, CSlider, rSlider, noiseSlider].forEach(el=> el.addEventListener('input', syncUI));
+  document.getElementById('resetBtn').addEventListener('click', rebuild);
+  document.getElementById('pauseBtn').addEventListener('click', ()=>{ running = !running; pauseBtn.textContent = running? 'Pause':'Resume'; });
+
+  syncUI(); rebuild(); loop();
+  </script>
+</body>
+</html>
